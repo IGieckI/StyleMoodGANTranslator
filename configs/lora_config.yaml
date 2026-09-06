@@ -1,0 +1,24 @@
+pretrained_model_name_or_path: stable-diffusion-v1-5/stable-diffusion-v1-5
+
+dataset_dir: null
+run_name: null
+output_dir: outputs/checkpoints
+seed: 42
+
+rank: 8
+lora_alpha: 16
+lora_dropout: 0.0
+target_modules: [to_k, to_q, to_v, to_out.0]
+
+learning_rate: 1.0e-4
+lr_warmup_steps: 100
+max_train_steps: 1200
+train_batch_size: 1
+gradient_accumulation_steps: 2
+max_grad_norm: 1.0
+# 0 = no intermediate checkpoints (only final weights)
+checkpointing_steps: 0
+
+use_8bit_adam: false
+# Use fp32 VAE for training (reccomended for LoRA training, as it can improve stability and reduce memory usage)
+vae_fp32: true
