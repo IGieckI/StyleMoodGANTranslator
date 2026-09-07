@@ -1,0 +1,20 @@
+# Testing prompts
+
+# Neutral subjects
+a lighthouse on a rocky cliff
+a portrait of an old fisherman
+a bowl of fruit on a wooden table
+a city skyline seen from a rooftop
+
+# Ambiguous subjects
+a forest
+a wolf standing in a snowy forest
+an empty subway station at night
+
+# More "scary" subjects
+an abandoned hospital corridor
+a scarecrow in a foggy field at dusk
+
+# More "bright/nature" subjects
+a meadow of wildflowers under a clear sky
+a waterfall in a sunlit tropical forest
