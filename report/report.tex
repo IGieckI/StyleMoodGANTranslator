@@ -1,0 +1,282 @@
+% Report del progetto Style/Mood LoRA su Stable Diffusion 1.5.
+% Compilazione:  latexmk -pdf report.tex     (oppure: pdflatex report.tex, due volte)
+% Le figure in figures/ si rigenerano dai file in outputs/samples/ e data/processed/.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+% Colori dei due mood: usati solo dove si parla dei rispettivi run.
+\definecolor{brightHue}{HTML}{A66E15}
+\definecolor{scaryHue}{HTML}{456B82}
+
+\newcommand{\tok}[1]{\texttt{\small #1}}
+\newcommand{\bright}{\textcolor{brightHue}{\textbf{bright}}}
+\newcommand{\scary}{\textcolor{scaryHue}{\textbf{scary}}}
+
+% Larghezza delle celle immagine nelle griglie di confronto.
+\newlength{\thumbw}
+\setlength{\thumbw}{3.6cm}
+\newcommand{\thumb}[1]{\includegraphics[width=\thumbw]{figures/#1}}
+
+% Colonna di sinistra con il testo del prompt, a capo automatico.
+\newcolumntype{P}{>{\raggedright\arraybackslash}p{2.7cm}}
+
+% I nomi di file e flag in \texttt{} sono lunghi e non spezzabili: un po' di elasticita' in piu'
+% evita che sporgano dal margine.
+\emergencystretch=2em
+
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+\title{\vspace{-1.5cm}Two Moods, One UNet\\[0.3em]
+  \large Trasferimento di stile con adapter LoRA su Stable Diffusion 1.5}
+\author{Giacomo Antonelli}
+\date{8 settembre 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Si addestrano due adapter LoRA sull'UNet congelato di Stable Diffusion 1.5 per fargli apprendere
+un \emph{mood} visivo astratto da 30 e 35 fotografie personali, e si misura quanto quello stile
+generalizzi su prompt mai visti in training. Vengono aggiornati 1.594.368 parametri su 861M
+(lo 0,185\%): ogni adapter pesa 6,1\,MB contro i \textasciitilde3,4\,GB del modello completo.
+Entrambi i mood si trasferiscono in modo netto su soggetti estranei ai rispettivi dataset, con
+delta CLIP positivi ma piccoli ($+0{,}0380$ e $+0{,}0195$), coerenti con il fatto che la
+similarit\`a CLIP immagine-immagine \`e dominata dal contenuto e non dallo stile.
+\end{abstract}
+
+\section{Obiettivo}
+
+La domanda \`e se un LoRA di rango 8, applicato alle sole proiezioni di attenzione di un UNet
+congelato, possa assorbire qualcosa di poco definibile come un \emph{mood} a partire da qualche
+decina di fotografie, e poi applicarlo a prompt che con quelle fotografie non condividono nulla.
+
+Tutto resta congelato tranne l'adapter: VAE, text encoder e gli 861M parametri dell'UNet. Le
+matrici LoRA vengono iniettate nelle proiezioni \texttt{to\_q}, \texttt{to\_k}, \texttt{to\_v} e
+\texttt{to\_out.0}, cio\`e dove entra il condizionamento testuale. Lo stile viene agganciato a una
+frase trigger con cui terminano tutte le caption di training, e la stessa frase lo riattiva in
+inferenza.
+
+\section{Metodo}
+
+\subsection{Dati}
+
+Un mood per sottocartella. Le immagini vengono portate a $512\times512$ con resize sul lato corto
+e center crop, e a ciascuna viene associata una caption che termina con il trigger del proprio
+mood. Il trigger viene registrato in \texttt{dataset.json} e propagato fino al checkpoint, cos\`i
+in inferenza non va riscritto a mano: un suffisso diverso da quello di training lascia l'adapter
+silenziosamente inattivo, ed \`e stato l'errore pi\`u frequente nelle prime prove.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrl}
+\toprule
+run & trigger & immagini & carattere del dataset \\
+\midrule
+\bright & \tok{<cjh-bright>} & 30 & saturo, luminoso, illustrativo \\
+\scary  & \tok{<cjh-scary>}  & 35 & desaturato, freddo, nebbioso \\
+\bottomrule
+\end{tabular}
+\caption{I due dataset di stile. Il trigger \`e la sola parte comune a tutte le caption del mood.}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/dataset_bright.jpg}\\[0.35em]
+\includegraphics[width=0.86\textwidth]{figures/dataset_scary.jpg}
+\caption{Tre immagini di training per mood: \bright{} in alto, \scary{} in basso.}
+\end{figure}
+
+\subsection{Training}
+
+Entrambi i run condividono gli stessi iperparametri, quindi i due adapter differiscono solo per
+ci\`o che hanno visto: rango 8, $\alpha=16$, learning rate $10^{-4}$, 1200 step, batch 1 con
+gradient accumulation 2, risoluzione $512\times512$, seed 42.
+
+Ogni step campiona un timestep casuale, aggiunge il rumore corrispondente al latente prodotto dal
+VAE e chiede all'UNet di predirlo; la loss \`e l'MSE fra rumore predetto e rumore vero, e i
+gradienti raggiungono le sole matrici LoRA. Il gradient checkpointing e l'fp16 sono ci\`o che fa
+stare il training nei 6\,GB della GPU usata: su architettura Pascal l'fp16 serve a risparmiare
+memoria pi\`u che ad accelerare.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+parametri addestrabili & 1.594.368 \\
+parametri totali dell'UNet & 861.115.332 \\
+frazione addestrata & 0,185\,\% \\
+dimensione dell'adapter & 6,1\,MB \\
+dimensione del modello completo & \textasciitilde3,4\,GB \\
+GPU & GTX 1060 6\,GB \\
+durata di un run & 1h\,27m \\
+\bottomrule
+\end{tabular}
+\caption{Costo del fine-tuning. Il rapporto fra le ultime due voci \`e il punto del PEFT.}
+\end{table}
+
+\subsection{Valutazione}
+
+Gli 11 prompt di valutazione descrivono soggetti mai visti in training: quattro neutri rispetto a
+entrambi i mood, tre ambigui, e due per mood scelti per tirare il risultato da una parte. Il seed
+dipende solo dall'indice del prompt e non dalla variante, quindi base e adapter partono dallo
+stesso rumore e le differenze sono attribuibili al solo adapter.
+
+La metrica \`e la similarit\`a CLIP media (\texttt{clip-vit-base-patch32}) fra immagini generate e
+dataset di riferimento del mood. Il valore assoluto non \`e interpretabile da solo, quindi si
+riporta il delta rispetto alle stesse immagini generate dal modello base.
+
+\section{Risultati}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+run & base & lora & delta & std & prompt migliorati \\
+\midrule
+\bright & 0,5877 & 0,6257 & $+0{,}0380$ & 0,0673 & 7 / 11 \\
+\scary  & 0,5571 & 0,5766 & $+0{,}0195$ & 0,0643 & 8 / 11 \\
+\bottomrule
+\end{tabular}
+\caption{Similarit\`a CLIP media contro il dataset di riferimento di ciascun mood.}
+\end{table}
+
+Entrambi i delta sono positivi ed entrambi sono piccoli, il che \`e l'esito atteso e non un
+risultato deludente: la similarit\`a CLIP immagine-immagine \`e dominata dal soggetto, e il
+soggetto \`e tenuto fisso fra le colonne per costruzione. La metrica va letta come indizio
+debole; la griglia di confronto resta la valutazione primaria.
+
+All'ispezione visiva il trasferimento \`e netto gi\`a a scala 1.0, quindi non \`e stato necessario
+alcuno sweep sull'intensit\`a dell'adapter. \bright{} converte le fotografie in illustrazione: il
+faro acquista roccia dipinta e cielo da manifesto, il pescatore diventa un ritratto pittorico, la
+cascata vira su turchese e viola. \scary{} lavora invece per sottrazione: toglie saturazione,
+raffredda la palette e riempie di foschia il piano intermedio, tanto che il bosco diventa
+giallo-grigio e il lupo nella neve perde quasi tutto il colore. Vale la pena notare che il
+risultato legge come \emph{inquietudine} e non come horror: non viene aggiunto nulla di
+truculento, viene solo rimosso il calore.
+
+Le righe pi\`u indicative sono quelle dei soggetti neutri. Una ciotola di frutta e uno skyline
+non hanno nulla a che vedere con nessuno dei due dataset, eppure entrambi gli adapter li
+ristilizzano in modo coerente: \`e esattamente la generalizzazione che l'esperimento voleva
+verificare.
+
+\section{Limiti}
+
+\begin{enumerate}[leftmargin=*]
+
+\item \textbf{Il trigger porta con s\'e del significato.} Il tokenizer di CLIP spezza il trigger
+in pezzi ordinari --- \tok{['in','<','cj','h','-','scary','>','style']} --- e \emph{scary} e
+\emph{bright} sono parole inglesi che il modello base gi\`a comprende. Poich\'e la colonna BASE
+non riceve alcun suffisso, una parte dello scarto visibile potrebbe appartenere alla parola e non
+all'adapter. Una colonna di controllo (modello base \emph{con} il suffisso, senza adapter)
+separerebbe i due contributi; un trigger privo di senso li separerebbe alla radice, al costo di
+riaddestrare entrambi i run.
+
+\item \textbf{Le caption non contengono contenuto.} Tutte le caption di un mood sono identiche e
+si riducono al trigger, quindi l'adapter non ha modo di distinguere stile e soggetto: impara
+``quando compare questa frase, assomiglia a queste fotografie''. Il captioning automatico
+(\texttt{--caption-mode blip}) descriverebbe separatamente il contenuto di ogni immagine,
+lasciando al trigger il solo stile.
+
+\item \textbf{Il warmup dura il doppio di quanto configurato.} Allo scheduler viene passato
+\texttt{lr\_warmup\_steps} moltiplicato per la gradient accumulation, ma \texttt{accelerate} lo
+avanza solo quando l'optimizer compie davvero uno step, cio\`e una volta per global step. Il
+warmup \`e quindi durato 200 step su 1200 invece di 100. Entrambi i run condividono lo stesso
+percorso di codice e restano confrontabili fra loro; la correzione \`e di una riga ed \`e da fare
+prima del prossimo sweep.
+
+\item \textbf{La dimensione del campione \`e piccola.} Undici prompt, una immagine per prompt.
+I delta CLIP hanno deviazione standard superiore alla loro stessa media, quindi non se ne pu\`o
+ricavare una graduatoria fra i due mood.
+
+\end{enumerate}
+
+\section{Riproducibilit\`a}
+
+\begin{enumerate}[leftmargin=*,itemsep=0.2em]
+\item \texttt{python scripts/prepare\_dataset.py --mood scary}
+\item \texttt{python scripts/train\_lora.py --mood scary}
+\item \texttt{python scripts/generate\_comparison.py}
+\item \texttt{python scripts/evaluate\_clip.py}
+\end{enumerate}
+
+Il flag \texttt{--mood} lega in un colpo solo le tre convenzioni del repo:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+dataset & \texttt{data/processed/<mood>} \\
+run     & \texttt{outputs/checkpoints/<mood>} \\
+trigger & \texttt{<cjh-<mood>>} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Senza argomenti, \texttt{generate\_comparison.py} confronta il modello base con tutti gli adapter
+addestrati e produce un'unica griglia; il suffisso di attivazione di ciascun adapter viene letto
+dal suo \texttt{run.json}, non passato a mano.
+
+\clearpage
+\appendix
+\section{Griglie di confronto}
+
+Ogni riga usa lo stesso seed nelle tre colonne: le differenze sono attribuibili al solo adapter.
+Gli adapter sono applicati a scala 1.0.
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{P ccc}
+& \small\textbf{BASE} & \small\textcolor{brightHue}{\textbf{BRIGHT}} & \small\textcolor{scaryHue}{\textbf{SCARY}} \\
+\small a lighthouse on a rocky cliff & \thumb{base_00.jpg} & \thumb{bright_00.jpg} & \thumb{scary_00.jpg} \\
+\small a portrait of an old fisherman & \thumb{base_01.jpg} & \thumb{bright_01.jpg} & \thumb{scary_01.jpg} \\
+\small a bowl of fruit on a wooden table & \thumb{base_02.jpg} & \thumb{bright_02.jpg} & \thumb{scary_02.jpg} \\
+\small a city skyline seen from a rooftop & \thumb{base_03.jpg} & \thumb{bright_03.jpg} & \thumb{scary_03.jpg} \\
+\end{tabular}
+\caption{Soggetti neutri rispetto a entrambi i dataset: misurano quanto lo stile si applichi
+fuori dal proprio dominio.}
+\end{figure}
+
+\clearpage
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{P ccc}
+& \small\textbf{BASE} & \small\textcolor{brightHue}{\textbf{BRIGHT}} & \small\textcolor{scaryHue}{\textbf{SCARY}} \\
+\small a forest & \thumb{base_04.jpg} & \thumb{bright_04.jpg} & \thumb{scary_04.jpg} \\
+\small a wolf standing in a snowy forest & \thumb{base_05.jpg} & \thumb{bright_05.jpg} & \thumb{scary_05.jpg} \\
+\small an empty subway station at night & \thumb{base_06.jpg} & \thumb{bright_06.jpg} & \thumb{scary_06.jpg} \\
+\small an abandoned hospital corridor & \thumb{base_07.jpg} & \thumb{bright_07.jpg} & \thumb{scary_07.jpg} \\
+\end{tabular}
+\caption{Soggetti ambigui: \`e il mood dell'adapter a decidere da che parte farli pendere.}
+\end{figure}
+
+\clearpage
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{P ccc}
+& \small\textbf{BASE} & \small\textcolor{brightHue}{\textbf{BRIGHT}} & \small\textcolor{scaryHue}{\textbf{SCARY}} \\
+\small a scarecrow in a foggy field at dusk & \thumb{base_08.jpg} & \thumb{bright_08.jpg} & \thumb{scary_08.jpg} \\
+\small a meadow of wildflowers under a clear sky & \thumb{base_09.jpg} & \thumb{bright_09.jpg} & \thumb{scary_09.jpg} \\
+\small a waterfall in a sunlit tropical forest & \thumb{base_10.jpg} & \thumb{bright_10.jpg} & \thumb{scary_10.jpg} \\
+\end{tabular}
+\caption{Soggetti che spingono verso l'uno o l'altro mood: il primo verso \scary{}, gli altri due
+verso \bright{}.}
+\end{figure}
+
+\end{document}
